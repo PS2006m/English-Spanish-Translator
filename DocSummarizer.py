@@ -47,13 +47,11 @@ def extract_text(file_path: str) -> str:
 
 
 def sentence_split(text: str) -> List[str]:
-    """Lightweight regex-based sentence splitter (no nltk)."""
     sentences = re.split(r'(?<=[.!?])\s+', text)
     return [s.strip() for s in sentences if s.strip()]
 
 
 def chunk_text(text: str, chunk_size=CHUNK_SIZE) -> List[str]:
-    """Split into chunks at sentence boundaries, remove duplicates & garbage."""
     sentences = sentence_split(text)
     chunks, current, current_len = [], [], 0
     for sent in sentences:
