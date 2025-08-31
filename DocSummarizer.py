@@ -18,7 +18,7 @@ import pdfplumber
 import re
 print("🔍 Reached start of docsum.py", flush=True)
 EMBED_MODEL = "sentence-transformers/all-MiniLM-L6-v2"
-GEN_MODEL = "google/pegasus-xsum"  # summarization-optimized
+GEN_MODEL = "google/pegasus-xsum" 
 CHUNK_SIZE = 800
 def extract_text(file_path: str) -> str:
     """Extract clean text from PDF or TXT."""
