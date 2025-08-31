@@ -21,7 +21,6 @@ EMBED_MODEL = "sentence-transformers/all-MiniLM-L6-v2"
 GEN_MODEL = "google/pegasus-xsum" 
 CHUNK_SIZE = 800
 def extract_text(file_path: str) -> str:
-    """Extract clean text from PDF or TXT."""
     text = ""
     if file_path.endswith(".txt"):
         with open(file_path, "r", encoding="utf-8", errors="ignore") as f:
