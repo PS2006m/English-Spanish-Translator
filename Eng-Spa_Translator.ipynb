@@ -1,0 +1,122 @@
+import numpy as np
+import pandas as pd
+import tensorflow as tf
+from tensorflow import keras
+from tensorflow.keras.models import Model
+from tensorflow.keras.layers import Input, LSTM, Embedding, Dense
+
+MAX_VOCAB_SIZE = 2000  
+MAX_LEN = 12           
+BATCH_SIZE = 8         
+EPOCHS = 10         
+LATENT_DIM = 128        
+
+sentences_df = pd.read_csv('sentences.csv', sep='\t', names=['id', 'lang', 'text'])
+eng_df = sentences_df[sentences_df['lang'] == 'eng']
+spa_df = sentences_df[sentences_df['lang'] == 'spa']
+links_df = pd.read_csv('links.csv', sep='\t', names=['eng_id', 'spa_id'])
+
+eng_spa = links_df.merge(eng_df, left_on='eng_id', right_on='id').merge(
+    spa_df, left_on='spa_id', right_on='id', suffixes=('_eng', '_spa'))
+
+english_texts = eng_spa['text_eng'].astype(str).tolist()
+spanish_texts = eng_spa['text_spa'].astype(str).tolist()
+
+max_samples = 5000
+english_texts = english_texts[:max_samples]
+spanish_texts = spanish_texts[:max_samples]
+
+filtered_pairs = [(e, s) for e, s in zip(english_texts, spanish_texts)
+                  if len(e.split()) <= MAX_LEN and len(s.split()) <= MAX_LEN]
+english_texts, spanish_texts = zip(*filtered_pairs)
+
+START_TOKEN = '<start>'
+END_TOKEN = '<end>'
+spanish_texts = [f"{START_TOKEN} {txt} {END_TOKEN}" for txt in spanish_texts]
+
+def build_tokenizer(texts, num_words=None):
+    tokenizer = keras.preprocessing.text.Tokenizer(num_words=num_words, filters='')
+    tokenizer.fit_on_texts(texts)
+    return tokenizer
+
+eng_tokenizer = build_tokenizer(english_texts, num_words=MAX_VOCAB_SIZE)
+spa_tokenizer = build_tokenizer(spanish_texts, num_words=MAX_VOCAB_SIZE)
+
+num_encoder_tokens = min(len(eng_tokenizer.word_index) + 1, MAX_VOCAB_SIZE)
+num_decoder_tokens = min(len(spa_tokenizer.word_index) + 1, MAX_VOCAB_SIZE)
+max_encoder_seq_length = min(MAX_LEN, max(len(txt.split()) for txt in english_texts))
+max_decoder_seq_length = min(MAX_LEN + 2, max(len(txt.split()) for txt in spanish_texts))  # +2 for start/end
+
+encoder_input_data = eng_tokenizer.texts_to_sequences(english_texts)
+encoder_input_data = keras.preprocessing.sequence.pad_sequences(
+    encoder_input_data, maxlen=max_encoder_seq_length, padding='post')
+
+decoder_input_data = spa_tokenizer.texts_to_sequences(spanish_texts)
+decoder_input_data = keras.preprocessing.sequence.pad_sequences(
+    decoder_input_data, maxlen=max_decoder_seq_length, padding='post')
+
+decoder_target_data = np.zeros((len(english_texts), max_decoder_seq_length, num_decoder_tokens), dtype='float32')
+for i, seq in enumerate(decoder_input_data):
+    for t in range(1, len(seq)):
+        if seq[t] < num_decoder_tokens:
+            decoder_target_data[i, t - 1, seq[t]] = 1.0
+
+encoder_inputs = Input(shape=(None,))
+enc_emb = Embedding(num_encoder_tokens, LATENT_DIM)(encoder_inputs)
+encoder_lstm = LSTM(LATENT_DIM, return_state=True)
+_, state_h, state_c = encoder_lstm(enc_emb)
+encoder_states = [state_h, state_c]
+
+decoder_inputs = Input(shape=(None,))
+dec_emb_layer = Embedding(num_decoder_tokens, LATENT_DIM)
+dec_emb = dec_emb_layer(decoder_inputs)
+decoder_lstm = LSTM(LATENT_DIM, return_sequences=True, return_state=True)
+decoder_outputs, _, _ = decoder_lstm(dec_emb, initial_state=encoder_states)
+decoder_dense = Dense(num_decoder_tokens, activation='softmax')
+decoder_outputs = decoder_dense(decoder_outputs)
+
+model = Model([encoder_inputs, decoder_inputs], decoder_outputs)
+model.compile(optimizer='rmsprop', loss='categorical_crossentropy', metrics=['accuracy'])
+
+model.fit([encoder_input_data, decoder_input_data], decoder_target_data,
+          batch_size=BATCH_SIZE,
+          epochs=EPOCHS,
+          validation_split=0.2)
+
+encoder_model = Model(encoder_inputs, encoder_states)
+decoder_state_input_h = Input(shape=(LATENT_DIM,))
+decoder_state_input_c = Input(shape=(LATENT_DIM,))
+decoder_states_inputs = [decoder_state_input_h, decoder_state_input_c]
+dec_emb2 = dec_emb_layer(decoder_inputs)
+decoder_outputs2, state_h2, state_c2 = decoder_lstm(dec_emb2, initial_state=decoder_states_inputs)
+decoder_outputs2 = decoder_dense(decoder_outputs2)
+decoder_model = Model([decoder_inputs] + decoder_states_inputs, [decoder_outputs2] + [state_h2, state_c2])
+
+reverse_spa_index = {idx: word for word, idx in spa_tokenizer.word_index.items()}
+reverse_spa_index[0] = '' 
+
+def decode_sequence(input_seq):
+    states_value = encoder_model.predict(input_seq)
+    target_seq = np.zeros((1, 1))
+    target_seq[0, 0] = spa_tokenizer.word_index.get(START_TOKEN, 1)
+    stop_condition = False
+    decoded_sentence = ''
+    while not stop_condition:
+        output_tokens, h, c = decoder_model.predict([target_seq] + states_value)
+        sampled_token_index = np.argmax(output_tokens[0, -1, :])
+        sampled_word = reverse_spa_index.get(sampled_token_index, '')
+        if (sampled_word == END_TOKEN or len(decoded_sentence.split()) > max_decoder_seq_length):
+            stop_condition = True
+        else:
+            decoded_sentence += ' ' + sampled_word
+        target_seq = np.zeros((1, 1))
+        target_seq[0, 0] = sampled_token_index
+        states_value = [h, c]
+    return decoded_sentence.strip()
+
+def translate(sentence):
+    seq = eng_tokenizer.texts_to_sequences([sentence])
+    seq = keras.preprocessing.sequence.pad_sequences(seq, maxlen=max_encoder_seq_length, padding='post')
+    return decode_sequence(seq)
+
+print(translate('Hello')) 
